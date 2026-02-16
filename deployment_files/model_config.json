@@ -1,0 +1,35 @@
+{
+    "feature_names": [
+        "TAVG",
+        "RH_AVG",
+        "SS",
+        "FF_AVG",
+        "RR_Lag1",
+        "RR_Lag2",
+        "RR_Lag3",
+        "TAVG_Lag1",
+        "TAVG_Lag2",
+        "TAVG_Lag3",
+        "RH_AVG_Lag1",
+        "RH_AVG_Lag2",
+        "RH_AVG_Lag3",
+        "SS_Lag1",
+        "SS_Lag2",
+        "SS_Lag3",
+        "FF_AVG_Lag1",
+        "FF_AVG_Lag2",
+        "FF_AVG_Lag3",
+        "RR_Roll3_Mean",
+        "RR_Roll3_Max"
+    ],
+    "thresholds": {
+        "xgboost": 0.35,
+        "lstm": 0.45
+    },
+    "model_metrics": {
+        "xgboost_acc": 0.8154158215010142,
+        "lstm_acc": 0.7849898580121704,
+        "xgboost_recall": 0.4888888888888889,
+        "lstm_recall": 0.45555555555555555
+    }
+}
