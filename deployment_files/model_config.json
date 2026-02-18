@@ -22,14 +22,11 @@
         "RR_Roll3_Mean",
         "RR_Roll3_Max"
     ],
-    "thresholds": {
-        "xgboost": 0.35,
-        "lstm": 0.45
-    },
-    "model_metrics": {
-        "xgboost_acc": 0.8154158215010142,
-        "lstm_acc": 0.7849898580121704,
-        "xgboost_recall": 0.4888888888888889,
-        "lstm_recall": 0.45555555555555555
+    "threshold": 0.35,
+    "model_type": "xgboost_only",
+    "metrics": {
+        "accuracy": 0.8154158215010142,
+        "recall_bahaya": 0.4888888888888889,
+        "precision_bahaya": 0.4943820224719101
     }
 }

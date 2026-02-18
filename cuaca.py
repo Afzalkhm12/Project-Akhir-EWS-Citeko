@@ -6,8 +6,7 @@ import json
 import os
 import plotly.graph_objects as go
 import plotly.express as px
-from tensorflow.keras.models import load_model
-from datetime import datetime # TAMBAHAN BARU: Untuk Timestamp Laporan
+from datetime import datetime
 
 # ==============================================================================
 # 1. KONFIGURASI HALAMAN & CSS PREMIUM
@@ -73,30 +72,32 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==============================================================================
-# 2. LOAD ASSETS & HISTORICAL STATS (BARU)
+# 2. LOAD ASSETS (UPDATED: XGBOOST ONLY)
 # ==============================================================================
 @st.cache_resource
 def load_assets():
     base_dir = 'deployment_files'
     try:
+        # Load Config
         with open(os.path.join(base_dir, 'model_config.json'), 'r') as f:
             config = json.load(f)
-        scaler = joblib.load(os.path.join(base_dir, 'scaler_robust.pkl'))
-        lstm_model = load_model(os.path.join(base_dir, 'best_model_lstm.keras'))
+        
+        # Load XGBoost Model (Pemenang)
+        # Note: Scaler dan LSTM dihapus karena di Notebook terakhir kita hanya save XGBoost
         xgb_model = joblib.load(os.path.join(base_dir, 'best_model_xgboost.pkl'))
-        return config, scaler, lstm_model, xgb_model
+        
+        return config, xgb_model
     except Exception as e:
-        st.error(f"❌ System Error: {e}. Pastikan file deployment lengkap.")
+        st.error(f"❌ System Error: {e}. Pastikan folder 'deployment_files' lengkap.")
         st.stop()
 
-config, scaler, lstm_model, xgb_model = load_assets()
+config, xgb_model = load_assets()
 
 # DATA HISTORIS CITEKO (HARDCODED STATS UNTUK KONTEKS)
-# Nilai rata-rata ini diambil dari insight data training Anda
 HISTORICAL_MEAN = {
-    'RR': 8.5,    # Rata-rata curah hujan harian
-    'RH': 82.0,   # Rata-rata kelembaban
-    'TAVG': 24.5  # Rata-rata suhu
+    'RR': 8.5,    
+    'RH': 82.0,   
+    'TAVG': 24.5  
 }
 
 # ==============================================================================
@@ -129,59 +130,94 @@ with st.sidebar:
 
     # Input Manual
     st.markdown("---")
-    rr_val = st.number_input("Curah Hujan Hari Ini (mm)", 0.0, 200.0, key='rr_val')
-    rh_val = st.number_input("Kelembaban Hari Ini (%)", 40.0, 100.0, key='rh_val')
-    tavg_val = st.number_input("Suhu Rata-rata Hari Ini (°C)", 15.0, 35.0, key='tavg_val')
+    rr_val = st.number_input("Curah Hujan Hari Ini (mm)", 0.0, 500.0, key='rr_val')
+    rh_val = st.number_input("Kelembaban Hari Ini (%)", 0.0, 100.0, key='rh_val')
+    tavg_val = st.number_input("Suhu Rata-rata Hari Ini (°C)", 10.0, 40.0, key='tavg_val')
+    
+    # Tambahan input agar sesuai fitur model (SS dan FF)
+    # Kita buat hidden/default calculation jika user tidak mau ribet, 
+    # atau tampilkan jika ingin detail. Disini kita pakai estimasi sederhana.
+    ss_est = 6.0 if rr_val < 5 else (0.0 if rr_val > 20 else 2.0)
+    ff_est = 2.0 if rr_val < 20 else (5.0 if rr_val > 50 else 3.0)
     
     analyze_btn = st.button("🔍 PREDIKSI & ANALISIS", type="primary", use_container_width=True)
 
     # FOOTER SIDEBAR
     st.markdown("---")
-    st.caption(f"Versi Sistem: v4.0 (Ultimate)\nModel: LSTM Cost-Sensitive\nLast Update: {datetime.now().strftime('%d-%m-%Y')}")
+    st.caption(f"Versi Sistem: v5.0 (Final)\nModel: XGBoost Optuna\nLast Update: {datetime.now().strftime('%d-%m-%Y')}")
 
 # ==============================================================================
 # 5. LOGIKA PREDIKSI & GENERATOR LAPORAN
 # ==============================================================================
-prob_lstm = 0.0
+prob_xgb = 0.0
 is_danger = False
-threshold = config['thresholds']['lstm']
-df_input_for_xai = None
+# Mengambil threshold dari config (default 0.35 jika tidak ada)
+threshold = config.get('threshold', 0.35) 
 prediction_text = ""
 
 if analyze_btn:
-    # --- A. FEATURE ENGINEERING ---
-    ss_val = 6.0 if rr_val < 5 else (0.0 if rr_val > 20 else 2.0)
-    ff_val = 2.0 if rr_val < 20 else (6.0 if rr_val > 50 else 4.0)
-    
-    input_data = {
-        'sin_day': [np.sin(2 * np.pi * 180 / 365.25)],
-        'cos_day': [np.cos(2 * np.pi * 180 / 365.25)],
-        'TAVG': [tavg_val], 'RH_AVG': [rh_val], 'SS': [ss_val], 'FF_AVG': [ff_val]
-    }
-    
-    # Lag Features
-    features_raw = ['RR', 'TAVG', 'RH_AVG', 'SS', 'FF_AVG']
-    current_vals = {'RR': rr_val, 'TAVG': tavg_val, 'RH_AVG': rh_val, 'SS': ss_val, 'FF_AVG': ff_val}
-    for feat in features_raw:
-        for i in [1, 2, 3]:
-            val = max(0, current_vals[feat] + (0 if i==1 else np.random.uniform(-2, 2)))
-            input_data[f'{feat}_Lag{i}'] = [val]
-
-    input_data['RR_Roll3_Max'] = [max(input_data['RR_Lag1'][0], input_data['RR_Lag2'][0], input_data['RR_Lag3'][0])]
-    input_data['RR_EMA7'] = [input_data['RR_Lag1'][0]]
-    input_data['Delta_RH'] = [input_data['RH_AVG_Lag1'][0] - input_data['RH_AVG_Lag2'][0]]
-
-    # --- B. PREDICTION ---
     try:
-        df_input = pd.DataFrame(input_data)[config['feature_names']]
-        df_input_for_xai = df_input.copy()
-        X_scaled = scaler.transform(df_input)
-        X_lstm = X_scaled.reshape((X_scaled.shape[0], 1, X_scaled.shape[1]))
+        # --- A. FEATURE ENGINEERING (SINKRONISASI DENGAN NOTEBOOK) ---
+        # Kita menggunakan data input "Hari Ini" sebagai basis.
+        # Strategi: Persistence (Nilai Lag 1, 2, 3 dianggap sama dengan Hari Ini)
+        # agar user tidak perlu input data historis.
         
-        prob_lstm = lstm_model.predict(X_lstm, verbose=0).flatten()[0]
-        is_danger = prob_lstm >= threshold
+        # 1. Base Variables
+        current_data = {
+            'RR': rr_val,
+            'TAVG': tavg_val,
+            'RH_AVG': rh_val,
+            'SS': ss_est,
+            'FF_AVG': ff_est
+        }
+        
+        features_dict = {}
+        
+        # 2. Masukkan Variabel Utama (Non-Target) ke Features Dict
+        # Sesuai notebook: X = df.drop(['RR', 'Target']) -> Jadi TAVG, RH, SS, FF masuk
+        features_dict['TAVG'] = tavg_val
+        features_dict['RH_AVG'] = rh_val
+        features_dict['SS'] = ss_est
+        features_dict['FF_AVG'] = ff_est
+        
+        # 3. Generate Lag Features (1, 2, 3)
+        cols_to_lag = ['RR', 'TAVG', 'RH_AVG', 'SS', 'FF_AVG']
+        for col in cols_to_lag:
+            val = current_data[col]
+            for i in [1, 2, 3]:
+                # Persistence assumption: Lag_i = Current Value
+                features_dict[f'{col}_Lag{i}'] = val
+        
+        # 4. Generate Rolling Features
+        # RR_Roll3_Mean dari RR_Lag1, Lag2, Lag3
+        rr_lags = [features_dict['RR_Lag1'], features_dict['RR_Lag2'], features_dict['RR_Lag3']]
+        features_dict['RR_Roll3_Mean'] = np.mean(rr_lags)
+        features_dict['RR_Roll3_Max'] = np.max(rr_lags)
+        
+        # 5. DataFrame Creation & Ordering
+        df_input = pd.DataFrame([features_dict])
+        
+        # PENTING: Reorder kolom sesuai urutan training XGBoost
+        required_feats = config['feature_names']
+        
+        # Safety check: isi 0 jika ada kolom kurang (tapi logic diatas harusnya sudah cover)
+        for f in required_feats:
+            if f not in df_input.columns:
+                df_input[f] = 0.0
+                
+        df_input = df_input[required_feats]
+        
+        # --- B. PREDICTION (XGBOOST) ---
+        # XGBoost tidak butuh Scaling manual jika dilatih dengan data raw/robust scaler internal
+        # Di notebook terakhir, kita langsung fit ke X_train_smote
+        
+        # Ambil probabilitas kelas 1 (Bahaya)
+        prob_xgb = xgb_model.predict_proba(df_input)[0][1]
+        is_danger = prob_xgb >= threshold
+
     except Exception as e:
-        st.error(f"Error Model: {e}")
+        st.error(f"Terjadi kesalahan pada model: {e}")
+        st.stop()
 
 # ==============================================================================
 # 6. VISUALISASI UTAMA
@@ -214,7 +250,7 @@ if analyze_btn:
             
     with col_res2:
         st.markdown('<div class="section-header">🌡️ Tingkat Risiko</div>', unsafe_allow_html=True)
-        gauge_val = prob_lstm * 100
+        gauge_val = prob_xgb * 100
         fig_g = go.Figure(go.Indicator(
             mode = "gauge+number", value = gauge_val,
             title = {'text': "Probabilitas (%)"},
@@ -228,8 +264,7 @@ if analyze_btn:
         fig_g.update_layout(height=250, margin=dict(l=20,r=20,t=10,b=20))
         st.plotly_chart(fig_g, use_container_width=True)
 
-    # --- BAGIAN BARU: KONTEKS HISTORIS (NOVELTY: CONTEXT AWARENESS) ---
-    # Ini menjawab pertanyaan: "Seberapa parah input hari ini dibanding rata-rata?"
+    # --- BAGIAN BARU: KONTEKS HISTORIS ---
     st.markdown('<div class="section-header">📊 Konteks Data Input (Anomaly Detection)</div>', unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
     
@@ -240,14 +275,14 @@ if analyze_btn:
     c2.metric("Kelembaban Input", f"{rh_val:.1f} %", f"{delta_rh:.1f} % vs Rata-rata", delta_color="inverse")
     c3.metric("Status Anomali", "Terdeteksi" if is_danger else "Normal", "High Risk" if is_danger else "Low Risk")
     
-    st.info("💡 **Insight:** Metrik di atas membandingkan input Anda dengan rata-rata historis Citeko (2016-2024).")
+    st.info("💡 **Insight:** Metrik di atas membandingkan input Anda dengan rata-rata historis Citeko.")
 
     # --- BAGIAN 2: ESTIMASI TREN (FORECAST 24 JAM) ---
     st.markdown('<div class="section-header">📉 Estimasi Tren Cuaca 24 Jam Kedepan</div>', unsafe_allow_html=True)
     
     hours = [f"{i:02d}:00" for i in range(24)]
     hourly_risk = []
-    base_risk = prob_lstm
+    base_risk = prob_xgb
     for i in range(24):
         factor = 1.0
         if 13 <= i <= 17: factor = 1.3 
@@ -263,7 +298,7 @@ if analyze_btn:
     fig_line.update_layout(yaxis_range=[0, 100], height=350, margin=dict(l=20,r=20,t=20,b=20))
     st.plotly_chart(fig_line, use_container_width=True)
 
-    # --- BAGIAN BARU: REKOMENDASI MITIGASI (NOVELTY: ACTIONABILITY) ---
+    # --- BAGIAN BARU: REKOMENDASI MITIGASI ---
     st.markdown('<div class="section-header">🛡️ Rekomendasi Mitigasi (SOP)</div>', unsafe_allow_html=True)
     
     col_mit1, col_mit2 = st.columns(2)
@@ -298,24 +333,31 @@ if analyze_btn:
             - 🛠️ **Maintenance Alat:** Cek sensor curah hujan dan anemometer.
             """)
 
-    # --- BAGIAN 3: EXPLAINABLE AI (XAI) ---
+    # --- BAGIAN 3: EXPLAINABLE AI (XAI) - XGBOOST ---
     st.markdown('<div class="section-header">🧠 Analisis Penyebab (XAI)</div>', unsafe_allow_html=True)
     
     col_xai1, col_xai2 = st.columns(2)
     with col_xai1:
-        st.subheader("Faktor Dominan")
+        st.subheader("Faktor Dominan (Feature Importance)")
         importance = xgb_model.feature_importances_
         feats = config['feature_names']
         df_imp = pd.DataFrame({'Fitur': feats, 'Bobot': importance}).sort_values('Bobot', ascending=True).tail(8)
         fig_bar = px.bar(df_imp, x='Bobot', y='Fitur', orientation='h', text_auto='.3f', 
-                         color='Bobot', color_continuous_scale='Blues')
+                          color='Bobot', color_continuous_scale='Blues')
         fig_bar.update_layout(height=350, showlegend=False)
         st.plotly_chart(fig_bar, use_container_width=True)
 
     with col_xai2:
         st.subheader("Profil Input (Radar Chart)")
-        vals = [min(rr_val/100, 1), min(rh_val/100, 1), 1-(min((tavg_val-15)/20, 1)), min(rr_val/100, 1), min(rh_val/100, 1)]
-        cats = ['Hujan', 'Kelembaban', 'Suhu Dingin', 'Angin (Est)', 'Awan (Est)']
+        # Normalisasi sederhana untuk visualisasi radar
+        vals = [
+            min(rr_val/100, 1), 
+            min(rh_val/100, 1), 
+            1-(min((tavg_val-15)/20, 1)), # Semakin dingin semakin ke luar (1)
+            min(ss_est/12, 1), 
+            min(ff_est/10, 1)
+        ]
+        cats = ['Hujan', 'Kelembaban', 'Suhu Dingin', 'Sinar Matahari', 'Angin']
         fig_radar = go.Figure()
         fig_radar.add_trace(go.Scatterpolar(
             r=vals, theta=cats, fill='toself', 
@@ -324,7 +366,7 @@ if analyze_btn:
         fig_radar.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0, 1])), height=350, showlegend=False)
         st.plotly_chart(fig_radar, use_container_width=True)
 
-    # --- FITUR BARU: GENERATE REPORT (NOVELTY: UTILITY) ---
+    # --- FITUR BARU: GENERATE REPORT ---
     st.markdown("---")
     
     report_text = f"""
@@ -340,13 +382,13 @@ if analyze_btn:
     
     HASIL PREDIKSI (H+1):
     - Status           : {prediction_text}
-    - Probabilitas     : {prob_lstm:.2%}
+    - Probabilitas     : {prob_xgb:.2%}
     - Threshold Model  : {threshold:.2f}
     
     REKOMENDASI:
     {'[SIAGA] Aktifkan protokol bencana.' if is_danger else '[NORMAL] Lakukan monitoring rutin.'}
     
-    Dibuat oleh Sistem EWS berbasis LSTM.
+    Dibuat oleh Sistem EWS berbasis XGBoost.
     """
     
     st.download_button(
