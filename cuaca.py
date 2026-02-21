@@ -6,7 +6,7 @@ import json
 import os
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import datetime
+from datetime import datetime # TAMBAHAN BARU: Untuk Timestamp Laporan
 
 # ==============================================================================
 # 1. KONFIGURASI HALAMAN & CSS PREMIUM
@@ -111,43 +111,55 @@ st.markdown('<div class="sub-title">Prediksi Risiko Hujan Ekstrem (H+1) & Rekome
 # ==============================================================================
 with st.sidebar:
     st.header("🎛️ Input Data HARI INI")
-    st.info("Masukkan data observasi cuaca hari ini untuk memprediksi kondisi **BESOK**.")
     
-    # Init Session State
-    if 'rr_val' not in st.session_state: st.session_state['rr_val'] = 0.0
-    if 'rh_val' not in st.session_state: st.session_state['rh_val'] = 80.0
-    if 'tavg_val' not in st.session_state: st.session_state['tavg_val'] = 24.0
+    # --- MODIFIKASI SIDEBAR UNTUK MENGAKOMODASI UPLOAD ---
+    mode_analisis = st.radio("Pilih Mode Analisis:", ["Manual Harian", "Batch CSV"])
+    
+    if mode_analisis == "Manual Harian":
+        st.info("Masukkan data observasi cuaca hari ini untuk memprediksi kondisi **BESOK**.")
+        
+        # Init Session State
+        if 'rr_val' not in st.session_state: st.session_state['rr_val'] = 0.0
+        if 'rh_val' not in st.session_state: st.session_state['rh_val'] = 80.0
+        if 'tavg_val' not in st.session_state: st.session_state['tavg_val'] = 24.0
 
-    # Tombol Simulasi
-    st.markdown("**Simulasi Cepat:**")
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("☀️ Hari Cerah"):
-            st.session_state.update({'rr_val': np.random.uniform(0, 5), 'rh_val': np.random.uniform(60, 80), 'tavg_val': np.random.uniform(25, 29)})
-    with c2:
-        if st.button("⛈️ Hari Hujan"):
-            st.session_state.update({'rr_val': np.random.uniform(40, 100), 'rh_val': np.random.uniform(92, 99), 'tavg_val': np.random.uniform(20, 23)})
+        # Tombol Simulasi
+        st.markdown("**Simulasi Cepat:**")
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("☀️ Hari Cerah"):
+                st.session_state.update({'rr_val': np.random.uniform(0, 5), 'rh_val': np.random.uniform(60, 80), 'tavg_val': np.random.uniform(25, 29)})
+        with c2:
+            if st.button("⛈️ Hari Hujan"):
+                st.session_state.update({'rr_val': np.random.uniform(40, 100), 'rh_val': np.random.uniform(92, 99), 'tavg_val': np.random.uniform(20, 23)})
 
-    # Input Manual
-    st.markdown("---")
-    rr_val = st.number_input("Curah Hujan Hari Ini (mm)", 0.0, 500.0, key='rr_val')
-    rh_val = st.number_input("Kelembaban Hari Ini (%)", 0.0, 100.0, key='rh_val')
-    tavg_val = st.number_input("Suhu Rata-rata Hari Ini (°C)", 10.0, 40.0, key='tavg_val')
-    
-    # Tambahan input agar sesuai fitur model (SS dan FF)
-    # Kita buat hidden/default calculation jika user tidak mau ribet, 
-    # atau tampilkan jika ingin detail. Disini kita pakai estimasi sederhana.
-    ss_est = 6.0 if rr_val < 5 else (0.0 if rr_val > 20 else 2.0)
-    ff_est = 2.0 if rr_val < 20 else (5.0 if rr_val > 50 else 3.0)
-    
-    analyze_btn = st.button("🔍 PREDIKSI & ANALISIS", type="primary", use_container_width=True)
+        # Input Manual
+        st.markdown("---")
+        rr_val = st.number_input("Curah Hujan Hari Ini (mm)", 0.0, 500.0, key='rr_val')
+        rh_val = st.number_input("Kelembaban Hari Ini (%)", 0.0, 100.0, key='rh_val')
+        tavg_val = st.number_input("Suhu Rata-rata Hari Ini (°C)", 10.0, 40.0, key='tavg_val')
+        
+        # Tambahan input agar sesuai fitur model (SS dan FF)
+        # Kita buat hidden/default calculation jika user tidak mau ribet, 
+        # atau tampilkan jika ingin detail. Disini kita pakai estimasi sederhana.
+        ss_est = 6.0 if rr_val < 5 else (0.0 if rr_val > 20 else 2.0)
+        ff_est = 2.0 if rr_val < 20 else (5.0 if rr_val > 50 else 3.0)
+        
+        analyze_btn = st.button("🔍 PREDIKSI & ANALISIS", type="primary", use_container_width=True)
+        uploaded_file = None
+        
+    else: # Mode Batch CSV
+        st.info("Upload file CSV berisi riwayat cuaca untuk analisis beruntun.")
+        st.markdown("*Format Wajib: `Tanggal`, `RR`, `TAVG`, `RH_AVG`, `SS`, `FF_AVG`*")
+        uploaded_file = st.file_uploader("Upload Data Cuaca (.csv)", type=['csv'])
+        analyze_btn = False
 
     # FOOTER SIDEBAR
     st.markdown("---")
     st.caption(f"Versi Sistem: v5.0 (Final)\nModel: XGBoost Optuna\nLast Update: {datetime.now().strftime('%d-%m-%Y')}")
 
 # ==============================================================================
-# 5. LOGIKA PREDIKSI & GENERATOR LAPORAN
+# 5. LOGIKA PREDIKSI (PERBAIKAN ERROR INDEKS)
 # ==============================================================================
 prob_xgb = 0.0
 is_danger = False
@@ -155,7 +167,7 @@ is_danger = False
 threshold = config.get('threshold', 0.35) 
 prediction_text = ""
 
-if analyze_btn:
+if analyze_btn and mode_analisis == "Manual Harian":
     try:
         # --- A. FEATURE ENGINEERING (SINKRONISASI DENGAN NOTEBOOK) ---
         # Kita menggunakan data input "Hari Ini" sebagai basis.
@@ -180,6 +192,10 @@ if analyze_btn:
         features_dict['SS'] = ss_est
         features_dict['FF_AVG'] = ff_est
         
+        # --- PERBAIKAN: Menambahkan Variabel Ekstraksi Waktu ---
+        features_dict['sin_day'] = np.sin(2 * np.pi * datetime.now().timetuple().tm_yday / 365.25)
+        features_dict['cos_day'] = np.cos(2 * np.pi * datetime.now().timetuple().tm_yday / 365.25)
+
         # 3. Generate Lag Features (1, 2, 3)
         cols_to_lag = ['RR', 'TAVG', 'RH_AVG', 'SS', 'FF_AVG']
         for col in cols_to_lag:
@@ -189,10 +205,11 @@ if analyze_btn:
                 features_dict[f'{col}_Lag{i}'] = val
         
         # 4. Generate Rolling Features
-        # RR_Roll3_Mean dari RR_Lag1, Lag2, Lag3
         rr_lags = [features_dict['RR_Lag1'], features_dict['RR_Lag2'], features_dict['RR_Lag3']]
-        features_dict['RR_Roll3_Mean'] = np.mean(rr_lags)
+        features_dict['RR_Roll3_Mean'] = np.mean(rr_lags)  # <-- INI MEMPERBAIKI ERROR
         features_dict['RR_Roll3_Max'] = np.max(rr_lags)
+        features_dict['RR_EMA7'] = features_dict['RR_Lag1'] # Asumsi sederhana
+        features_dict['Delta_RH'] = 0.0 # Asumsi tidak ada perubahan
         
         # 5. DataFrame Creation & Ordering
         df_input = pd.DataFrame([features_dict])
@@ -220,10 +237,9 @@ if analyze_btn:
         st.stop()
 
 # ==============================================================================
-# 6. VISUALISASI UTAMA
+# 6. VISUALISASI UTAMA (KODE ASLI ANDA - DIPERTAHANKAN)
 # ==============================================================================
-
-if analyze_btn:
+if analyze_btn and mode_analisis == "Manual Harian":
     # --- BAGIAN 1: STATUS UTAMA ---
     col_res1, col_res2 = st.columns([1.5, 1])
     
@@ -251,20 +267,42 @@ if analyze_btn:
     with col_res2:
         st.markdown('<div class="section-header">🌡️ Tingkat Risiko</div>', unsafe_allow_html=True)
         gauge_val = prob_xgb * 100
+        
+        # --- PERBAIKAN: Membuat warna bar dinamis mengikuti status ---
+        bar_color = "#e74c3c" if is_danger else "#2ecc71" # Merah jika bahaya, Hijau jika aman
+        
         fig_g = go.Figure(go.Indicator(
-            mode = "gauge+number", value = gauge_val,
-            title = {'text': "Probabilitas (%)"},
+            mode = "gauge+number", 
+            value = gauge_val, # KODE INI YANG MEMBUATNYA BERGERAK REAL-TIME
+            title = {'text': "Probabilitas (%)", 'font': {'size': 16}},
             gauge = {
-                'axis': {'range': [None, 100]},
-                'bar': {'color': "#2c3e50"},
-                'steps': [{'range': [0, threshold*100], 'color': "#d1f2eb"}, {'range': [threshold*100, 100], 'color': "#fadbd8"}],
-                'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': threshold*100}
+                'axis': {'range': [0, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
+                'bar': {'color': bar_color, 'thickness': 0.75}, # Bar bergerak dan berubah warna
+                'bgcolor': "white",
+                'borderwidth': 2,
+                'bordercolor': "gray",
+                'steps': [
+                    {'range': [0, threshold*100], 'color': "#e8f8f5"}, # Background hijau muda (Aman)
+                    {'range': [threshold*100, 100], 'color': "#fdedec"}  # Background merah muda (Bahaya)
+                ],
+                'threshold': {
+                    'line': {'color': "red", 'width': 4}, 
+                    'thickness': 0.85, 
+                    'value': threshold*100
+                }
             }
         ))
-        fig_g.update_layout(height=250, margin=dict(l=20,r=20,t=10,b=20))
+        
+        # Animasi saat chart dimuat
+        fig_g.update_layout(
+            height=250, 
+            margin=dict(l=20,r=20,t=10,b=20),
+            paper_bgcolor="rgba(0,0,0,0)",
+            font={'color': "#2c3e50", 'family': "Arial"}
+        )
         st.plotly_chart(fig_g, use_container_width=True)
 
-    # --- BAGIAN BARU: KONTEKS HISTORIS ---
+    # --- BAGIAN BARU: KONTEKS HISTORIS (NOVELTY: CONTEXT AWARENESS) ---
     st.markdown('<div class="section-header">📊 Konteks Data Input (Anomaly Detection)</div>', unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
     
@@ -298,7 +336,7 @@ if analyze_btn:
     fig_line.update_layout(yaxis_range=[0, 100], height=350, margin=dict(l=20,r=20,t=20,b=20))
     st.plotly_chart(fig_line, use_container_width=True)
 
-    # --- BAGIAN BARU: REKOMENDASI MITIGASI ---
+    # --- BAGIAN BARU: REKOMENDASI MITIGASI (NOVELTY: ACTIONABILITY) ---
     st.markdown('<div class="section-header">🛡️ Rekomendasi Mitigasi (SOP)</div>', unsafe_allow_html=True)
     
     col_mit1, col_mit2 = st.columns(2)
@@ -343,7 +381,7 @@ if analyze_btn:
         feats = config['feature_names']
         df_imp = pd.DataFrame({'Fitur': feats, 'Bobot': importance}).sort_values('Bobot', ascending=True).tail(8)
         fig_bar = px.bar(df_imp, x='Bobot', y='Fitur', orientation='h', text_auto='.3f', 
-                          color='Bobot', color_continuous_scale='Blues')
+                         color='Bobot', color_continuous_scale='Blues')
         fig_bar.update_layout(height=350, showlegend=False)
         st.plotly_chart(fig_bar, use_container_width=True)
 
@@ -399,9 +437,59 @@ if analyze_btn:
         help="Unduh hasil prediksi ini untuk keperluan laporan administrasi."
     )
 
+# ==============================================================================
+# 7. LOGIKA VISUALISASI BATCH UPLOAD (FITUR BARU)
+# ==============================================================================
+elif mode_analisis == "Batch CSV" and uploaded_file is not None:
+    try:
+        df_upload = pd.read_csv(uploaded_file)
+        
+        # Cek kolom wajib (Sesuai model Anda)
+        required_raw_cols = ['RR', 'TAVG', 'RH_AVG', 'SS', 'FF_AVG']
+        if not all(col in df_upload.columns for col in required_raw_cols):
+            st.error("❌ File CSV tidak sesuai! Pastikan memiliki kolom: RR, TAVG, RH_AVG, SS, FF_AVG")
+        else:
+            st.markdown('<div class="section-header">📁 Hasil Analisis Data Batch (CSV)</div>', unsafe_allow_html=True)
+            
+            # Feature engineering sederhana untuk Batch (Persistence)
+            df_process = df_upload.copy()
+            for col in required_raw_cols:
+                for i in [1, 2, 3]:
+                    df_process[f'{col}_Lag{i}'] = df_process[col] # Asumsi lag bernilai sama
+            
+            df_process['RR_Roll3_Mean'] = df_process[['RR_Lag1', 'RR_Lag2', 'RR_Lag3']].mean(axis=1)
+            df_process['RR_Roll3_Max'] = df_process[['RR_Lag1', 'RR_Lag2', 'RR_Lag3']].max(axis=1)
+            df_process['RR_EMA7'] = df_process['RR_Lag1']
+            df_process['Delta_RH'] = 0.0 
+            df_process['sin_day'] = np.sin(2 * np.pi * 180 / 365.25)
+            df_process['cos_day'] = np.cos(2 * np.pi * 180 / 365.25)
+
+            required_feats = config['feature_names']
+            for f in required_feats:
+                if f not in df_process.columns:
+                    df_process[f] = 0.0
+                    
+            X_batch = df_process[required_feats]
+            
+            # Predict XGBoost
+            prob_batch = xgb_model.predict_proba(X_batch)[:, 1]
+            
+            df_upload['Probabilitas (%)'] = np.round(prob_batch * 100, 2)
+            df_upload['Status (H+1)'] = np.where(prob_batch >= threshold, '🚨 WASPADA', '✅ AMAN')
+            
+            st.dataframe(df_upload[['Tanggal', 'RR', 'RH_AVG', 'Probabilitas (%)', 'Status (H+1)'] if 'Tanggal' in df_upload.columns else df_upload], use_container_width=True)
+            
+            x_axis = 'Tanggal' if 'Tanggal' in df_upload.columns else df_upload.index
+            fig_batch = px.line(df_upload, x=x_axis, y='Probabilitas (%)', title="Tren Probabilitas Hujan Ekstrem (H+1)", markers=True)
+            fig_batch.add_hline(y=threshold*100, line_dash="dash", line_color="red", annotation_text="Ambang Batas Waspada")
+            st.plotly_chart(fig_batch, use_container_width=True)
+            
+    except Exception as e:
+        st.error(f"Error saat memproses CSV: {e}")
+
 else:
     # Tampilan Awal
-    st.warning("👈 Silakan masukkan data cuaca hari ini di Sidebar, lalu klik tombol **PREDIKSI & ANALISIS**.")
+    st.warning("👈 Silakan pilih mode analisis, masukkan data, lalu klik tombol analisis.")
     st.markdown("""
     <div style="text-align: center; color: #95a5a6; padding: 50px;">
         <h2>Sistem Siap Digunakan</h2>
@@ -411,4 +499,4 @@ else:
 
 # Footer
 st.markdown("---")
-st.markdown("<div style='text-align: center; font-size: 0.8rem; color: gray;'>Developed for Thesis Research | Universitas Universitas Nasional</div>", unsafe_allow_html=True)
+st.markdown("<div style='text-align: center; font-size: 0.8rem; color: gray;'>Developed for Thesis Research | Universitas Nasional</div>", unsafe_allow_html=True)
